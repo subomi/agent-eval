@@ -1,0 +1,35 @@
+{
+  "name": "agent-evals",
+  "version": "0.1.0",
+  "description": "CLI that evaluates local coding-agent sessions with LLM-judge metrics and reports scores plus concrete prompting/execution advice.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "agent-evals": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "tsx src/cli/index.ts"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.7.0",
+    "@earendil-works/pi-ai": "^0.84.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  }
+}
