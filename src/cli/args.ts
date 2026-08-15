@@ -1,110 +1,422 @@
-/** Hand-rolled argument parsing for the `agent-evals` binary. */
+/**
+ * Hand-rolled subcommand dispatcher for the `agent-evals` binary:
+ * `eval` (default), `list`, `batch`, `insights`, each with its own flags.
+ */
 
 export class UsageError extends Error {}
 
-export interface CliOptions {
-  help: boolean;
-  /** Print recent sessions and exit. */
-  list: boolean;
-  /** Emit the run JSON to stdout instead of the pretty report. */
+export type CommandName = 'eval' | 'list' | 'batch' | 'insights';
+
+const COMMAND_NAMES: readonly CommandName[] = ['eval', 'list', 'batch', 'insights'];
+
+export interface EvalOptions {
+  /** Emit the run record JSON to stdout instead of the pretty report. */
   json: boolean;
   /** Judge response disk cache (default on; `--no-cache` disables). */
   cache: boolean;
+  /** Re-run metrics even when the DB already has rows for them. */
+  force: boolean;
   /** Session uuid or transcript path; skips the interactive picker. */
   session: string | undefined;
   /** Explicit judge model, `"provider/model-id"`. */
   model: string | undefined;
-  /** Max sessions listed / offered in the picker. */
+  /** Max sessions offered in the picker. */
   limit: number | undefined;
+  /** Metric ids to run (comma-separated); undefined = all. */
+  metrics: string[] | undefined;
+  /** Agent source ids, "all", or undefined = config default. */
+  agents: string[] | 'all' | undefined;
 }
 
-export const USAGE = `agent-evals — evaluate a local coding-agent session with LLM-judge metrics
+export interface ListOptions {
+  limit: number | undefined;
+  project: string | undefined;
+  agents: string[] | 'all' | undefined;
+}
+
+export const DEFAULT_MIN_TURNS = 3;
+
+export interface BatchOptions {
+  /** Print the work plan and exit without any judge calls. */
+  dryRun: boolean;
+  force: boolean;
+  cache: boolean;
+  /** Skip sessions with fewer turns than this. */
+  minTurns: number;
+  /** Only sessions updated at/after this instant. */
+  since: Date | undefined;
+  project: string | undefined;
+  /** Evaluate at most this many sessions (most recent first). */
+  limit: number | undefined;
+  metrics: string[] | undefined;
+  model: string | undefined;
+  agents: string[] | 'all' | undefined;
+}
+
+export interface InsightsOptions {
+  /** Emit the full computed report as JSON to stdout instead of the view. */
+  json: boolean;
+  /** Force the one-shot artifact even when stdout is an interactive TTY. */
+  static: boolean;
+  /** Skip judge tab composition; always render the deterministic tabs. */
+  plain: boolean;
+  /** Only sessions updated at/after this instant. */
+  since: Date | undefined;
+  project: string | undefined;
+  /** Filter stored sessions to these agents ("all" = no filter). */
+  agents: string[] | 'all' | undefined;
+}
+
+export type ParsedCli =
+  | { command: 'eval'; help: boolean; options: EvalOptions }
+  | { command: 'list'; help: boolean; options: ListOptions }
+  | { command: 'batch'; help: boolean; options: BatchOptions }
+  | { command: 'insights'; help: boolean; options: InsightsOptions };
+
+export const USAGE = `agent-evals — evaluate local coding-agent sessions with LLM-judge metrics
 
 Usage
-  agent-evals                     interactive: pick a recent Cursor session and evaluate it
-  agent-evals --list              print recent sessions (id, age, turns, project, title) and exit
-  agent-evals --session <ref>     evaluate a session by uuid or transcript path (skips the picker)
+  agent-evals [eval] [options]    evaluate one session (interactive picker unless --session)
+  agent-evals list [options]      list recent sessions with an evaluated? column
+  agent-evals batch [options]     evaluate many sessions idempotently
+  agent-evals insights [options]  weekly trends, Agent Leverage composite, hotspots
 
-Options
-  --list                 list recent sessions and exit
+eval options
   --session, -s <ref>    session uuid or path to a transcript .jsonl
-  --model, -m <ref>      judge model as "provider/model-id" (default: auto-picked
-                         from providers with an API key in the environment)
-  --limit, -n <n>        max sessions to list / offer in the picker (default 15)
-  --no-cache             bypass the judge response cache in ~/.agent-evals/cache
-  --json                 emit the run JSON to stdout instead of the pretty report
+  --agents <ids|all>     agent sources to use (comma-separated: cursor,
+                         claude-code, codex; default: [agents].enabled in
+                         config.toml, else all available)
+  --model, -m <ref>      judge model "provider/model-id" (default: pinned model
+                         in config.toml, else auto-picked and pinned)
+  --metrics <ids>        run only these metrics (comma-separated ids)
+  --limit, -n <n>        max sessions offered in the picker (default 15)
+  --force                re-evaluate even when results already exist
+  --no-cache             bypass the judge response cache
+  --json                 emit the run record JSON to stdout instead of the report
+
+list options
+  --limit, -n <n>        max sessions to list (default 15)
+  --project <slug>       only sessions from this project
+  --agents <ids|all>     agent sources to list (see eval options)
+
+batch options
+  --dry-run              print the work plan and exit (no judge calls)
+  --force                re-evaluate metric pairs that already have results
+  --min-turns <n>        skip sessions with fewer turns (default ${DEFAULT_MIN_TURNS})
+  --since <date>         only sessions updated on/after this date (e.g. 2026-08-01)
+  --project <slug>       only sessions from this project
+  --agents <ids|all>     agent sources to scan (see eval options)
+  --limit <n>            evaluate at most n sessions (most recent first)
+  --metrics <ids>        run only these metrics (comma-separated ids)
+  --model, -m <ref>      judge model "provider/model-id"
+  --no-cache             bypass the judge response cache
+
+insights options
+  --since <date>         only sessions updated on/after this date (e.g. 2026-08-01)
+  --project <slug>       only sessions from this project
+  --agents <ids|all>     only stored sessions from these agents ("all" = no filter)
+  --static               print the one-shot report instead of the interactive
+                         tabs (always used when stdout is not a terminal)
+  --plain                skip judge tab composition; deterministic tabs only
+                         (config: [insights] compose = false)
+  --json                 emit the full computed report as JSON to stdout
+                         (includes viewSpec when tabs were composed)
+
+global
   --help, -h             show this help
 
-Environment
-  Provider API keys are read from the environment (or .env.local / .env in the
-  working directory): ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY,
-  OPENROUTER_API_KEY, XAI_API_KEY, GROQ_API_KEY, MISTRAL_API_KEY, DEEPSEEK_API_KEY.
-
 Files
-  ~/.agent-evals/runs    one JSON file per eval run
-  ~/.agent-evals/cache   cached judge responses (re-runs are free)`;
+  ~/.agent-evals/config.toml      provider API keys, pinned judge model, weights
+  ~/.agent-evals/agent-evals.db   sessions, metric results, directives
+  ~/.agent-evals/cache            cached judge responses (re-runs are free)`;
 
-export function parseArgs(argv: readonly string[]): CliOptions {
-  const opts: CliOptions = {
-    help: false,
-    list: false,
+export function parseCommandLine(argv: readonly string[]): ParsedCli {
+  let command: CommandName = 'eval';
+  let rest = argv;
+  const first = argv[0];
+  if (first !== undefined && !first.startsWith('-')) {
+    if (!(COMMAND_NAMES as readonly string[]).includes(first)) {
+      throw new UsageError(
+        `unknown command "${first}" (commands: ${COMMAND_NAMES.join(', ')})`,
+      );
+    }
+    command = first as CommandName;
+    rest = argv.slice(1);
+  }
+
+  switch (command) {
+    case 'eval':
+      return parseEval(rest);
+    case 'list':
+      return parseList(rest);
+    case 'batch':
+      return parseBatch(rest);
+    case 'insights':
+      return parseInsights(rest);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-command parsers
+// ---------------------------------------------------------------------------
+
+function parseEval(argv: readonly string[]): ParsedCli {
+  let help = false;
+  const options: EvalOptions = {
     json: false,
     cache: true,
+    force: false,
     session: undefined,
     model: undefined,
     limit: undefined,
+    metrics: undefined,
+    agents: undefined,
   };
 
+  walkFlags(argv, 'eval', (flag, take) => {
+    switch (flag) {
+      case '--help':
+      case '-h':
+        help = true;
+        return true;
+      case '--json':
+        options.json = true;
+        return true;
+      case '--no-cache':
+        options.cache = false;
+        return true;
+      case '--force':
+        options.force = true;
+        return true;
+      case '--session':
+      case '-s':
+        options.session = take();
+        return true;
+      case '--model':
+      case '-m':
+        options.model = take();
+        return true;
+      case '--limit':
+      case '-n':
+        options.limit = positiveInt(flag, take());
+        return true;
+      case '--metrics':
+        options.metrics = metricIds(take());
+        return true;
+      case '--agents':
+        options.agents = agentIds(take());
+        return true;
+      default:
+        return false;
+    }
+  });
+
+  return { command: 'eval', help, options };
+}
+
+function parseList(argv: readonly string[]): ParsedCli {
+  let help = false;
+  const options: ListOptions = { limit: undefined, project: undefined, agents: undefined };
+
+  walkFlags(argv, 'list', (flag, take) => {
+    switch (flag) {
+      case '--help':
+      case '-h':
+        help = true;
+        return true;
+      case '--limit':
+      case '-n':
+        options.limit = positiveInt(flag, take());
+        return true;
+      case '--project':
+        options.project = take();
+        return true;
+      case '--agents':
+        options.agents = agentIds(take());
+        return true;
+      default:
+        return false;
+    }
+  });
+
+  return { command: 'list', help, options };
+}
+
+function parseBatch(argv: readonly string[]): ParsedCli {
+  let help = false;
+  const options: BatchOptions = {
+    dryRun: false,
+    force: false,
+    cache: true,
+    minTurns: DEFAULT_MIN_TURNS,
+    since: undefined,
+    project: undefined,
+    limit: undefined,
+    metrics: undefined,
+    model: undefined,
+    agents: undefined,
+  };
+
+  walkFlags(argv, 'batch', (flag, take) => {
+    switch (flag) {
+      case '--help':
+      case '-h':
+        help = true;
+        return true;
+      case '--dry-run':
+        options.dryRun = true;
+        return true;
+      case '--force':
+        options.force = true;
+        return true;
+      case '--no-cache':
+        options.cache = false;
+        return true;
+      case '--min-turns':
+        options.minTurns = positiveInt(flag, take());
+        return true;
+      case '--since':
+        options.since = sinceDate(take());
+        return true;
+      case '--project':
+        options.project = take();
+        return true;
+      case '--limit':
+      case '-n':
+        options.limit = positiveInt(flag, take());
+        return true;
+      case '--metrics':
+        options.metrics = metricIds(take());
+        return true;
+      case '--model':
+      case '-m':
+        options.model = take();
+        return true;
+      case '--agents':
+        options.agents = agentIds(take());
+        return true;
+      default:
+        return false;
+    }
+  });
+
+  return { command: 'batch', help, options };
+}
+
+function parseInsights(argv: readonly string[]): ParsedCli {
+  let help = false;
+  const options: InsightsOptions = {
+    json: false,
+    static: false,
+    plain: false,
+    since: undefined,
+    project: undefined,
+    agents: undefined,
+  };
+
+  walkFlags(argv, 'insights', (flag, take) => {
+    switch (flag) {
+      case '--help':
+      case '-h':
+        help = true;
+        return true;
+      case '--json':
+        options.json = true;
+        return true;
+      case '--static':
+        options.static = true;
+        return true;
+      case '--plain':
+        options.plain = true;
+        return true;
+      case '--since':
+        options.since = sinceDate(take());
+        return true;
+      case '--project':
+        options.project = take();
+        return true;
+      case '--agents':
+        options.agents = agentIds(take());
+        return true;
+      default:
+        return false;
+    }
+  });
+
+  return { command: 'insights', help, options };
+}
+
+// ---------------------------------------------------------------------------
+// Flag-walking and value parsing helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Iterate argv as `--flag[=value]` tokens. `handle` returns false for flags
+ * the command does not know, which raises a usage error.
+ */
+function walkFlags(
+  argv: readonly string[],
+  command: CommandName,
+  handle: (flag: string, take: () => string) => boolean,
+): void {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
+    if (!arg.startsWith('-')) {
+      throw new UsageError(`unexpected argument "${arg}" for "agent-evals ${command}"`);
+    }
     const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
     const flag = eq === -1 ? arg : arg.slice(0, eq);
-    const inlineValue = eq === -1 ? undefined : arg.slice(eq + 1);
-
-    const takeValue = (): string => {
-      if (inlineValue !== undefined) return inlineValue;
+    const inline = eq === -1 ? undefined : arg.slice(eq + 1);
+    const take = (): string => {
+      if (inline !== undefined) return inline;
       const next = argv[i + 1];
       if (next === undefined) throw new UsageError(`${flag} requires a value`);
       i += 1;
       return next;
     };
-
-    switch (flag) {
-      case '--help':
-      case '-h':
-        opts.help = true;
-        break;
-      case '--list':
-        opts.list = true;
-        break;
-      case '--json':
-        opts.json = true;
-        break;
-      case '--no-cache':
-        opts.cache = false;
-        break;
-      case '--session':
-      case '-s':
-        opts.session = takeValue();
-        break;
-      case '--model':
-      case '-m':
-        opts.model = takeValue();
-        break;
-      case '--limit':
-      case '-n': {
-        const raw = takeValue();
-        const parsed = Number.parseInt(raw, 10);
-        if (!Number.isInteger(parsed) || parsed <= 0) {
-          throw new UsageError(`--limit expects a positive integer, got "${raw}"`);
-        }
-        opts.limit = parsed;
-        break;
-      }
-      default:
-        throw new UsageError(`unknown option "${arg}"`);
+    if (!handle(flag, take)) {
+      throw new UsageError(`unknown option "${arg}" for "agent-evals ${command}"`);
     }
   }
+}
 
-  return opts;
+function positiveInt(flag: string, raw: string): number {
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new UsageError(`${flag} expects a positive integer, got "${raw}"`);
+  }
+  return parsed;
+}
+
+function metricIds(raw: string): string[] {
+  const ids = raw
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+  if (ids.length === 0) {
+    throw new UsageError('--metrics expects a comma-separated list of metric ids');
+  }
+  return ids;
+}
+
+/** `--agents` value: the literal "all" or a comma-separated list of agent ids. */
+function agentIds(raw: string): string[] | 'all' {
+  const trimmed = raw.trim();
+  if (trimmed === 'all') return 'all';
+  const ids = trimmed
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+  if (ids.length === 0) {
+    throw new UsageError('--agents expects "all" or a comma-separated list of agent ids');
+  }
+  return ids;
+}
+
+function sinceDate(raw: string): Date {
+  const ms = Date.parse(raw);
+  if (Number.isNaN(ms)) {
+    throw new UsageError(`--since expects a date (e.g. 2026-08-01), got "${raw}"`);
+  }
+  return new Date(ms);
 }

@@ -34,6 +34,14 @@ export interface Session {
   project: string;
   title: string;
   updatedAt: Date;
+  /**
+   * sha256 hex digest of the raw transcript bytes, computed by the adapter
+   * at load time. Part of the evaluation idempotency key: a session edited
+   * after being evaluated re-evaluates as new work.
+   */
+  contentHash: string;
+  /** Absolute path of the transcript file this session was loaded from. */
+  transcriptPath: string;
   turns: Turn[];
 }
 

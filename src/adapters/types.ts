@@ -35,6 +35,9 @@ export interface SessionSource {
   /** Human-readable name for pickers, e.g. "Cursor". */
   readonly name: string;
 
+  /** True when the source's local session store exists on this machine. */
+  isAvailable(): boolean;
+
   /** List available sessions, most recently updated first. */
   listSessions(options?: ListSessionsOptions): Promise<SessionMeta[]>;
 

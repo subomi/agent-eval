@@ -25,6 +25,7 @@
  * - Malformed lines are skipped; "[REDACTED]" placeholders pass through.
  */
 
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -34,7 +35,6 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Session, ToolCall, Turn } from '../model/session.js';
 import type { ListSessionsOptions, SessionMeta, SessionSource } from './types.js';
 
-const DEFAULT_LIST_LIMIT = 30;
 const TITLE_SNIPPET_MAX_CHARS = 64;
 
 /** `SessionMeta` plus the raw Cursor project folder slug. */
@@ -84,8 +84,15 @@ export class CursorSource implements SessionSource {
       );
   }
 
+  isAvailable(): boolean {
+    return existsSync(this.projectsDir);
+  }
+
+  /**
+   * List sessions, most recently updated first. Without `options.limit`
+   * every discovered session is returned (batch needs the full corpus).
+   */
   async listSessions(options: ListSessionsOptions = {}): Promise<CursorSessionMeta[]> {
-    const limit = options.limit ?? DEFAULT_LIST_LIMIT;
     const transcripts = await this.discoverTranscripts();
     const titles = this.readTitleIndex();
 
@@ -110,7 +117,7 @@ export class CursorSource implements SessionSource {
     }
 
     metas.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
-    metas = metas.slice(0, limit);
+    if (options.limit !== undefined) metas = metas.slice(0, options.limit);
 
     // Fallback titles (db locked/missing, or subagent transcripts that are
     // not indexed): derive a snippet from the first real user query. Only
@@ -128,7 +135,9 @@ export class CursorSource implements SessionSource {
 
   async loadSession(ref: string | SessionMeta): Promise<Session> {
     const located = await this.resolveRef(ref);
-    const raw = await readFile(located.transcriptPath, 'utf8');
+    const rawBytes = await readFile(located.transcriptPath);
+    const contentHash = createHash('sha256').update(rawBytes).digest('hex');
+    const raw = rawBytes.toString('utf8');
     const turns = parseTranscriptLines(raw);
 
     let title = located.title;
@@ -152,6 +161,8 @@ export class CursorSource implements SessionSource {
       project: located.project ?? 'unknown',
       title,
       updatedAt,
+      contentHash,
+      transcriptPath: located.transcriptPath,
       turns,
     };
   }
@@ -523,7 +534,8 @@ async function firstUserQuerySnippet(transcriptPath: string): Promise<string | u
   return fallback;
 }
 
-function snippetOf(text: string): string {
+/** First line of a text, truncated to title length (shared with other adapters). */
+export function snippetOf(text: string): string {
   const firstLine = text.split('\n', 1)[0]?.trim() ?? '';
   if (firstLine.length <= TITLE_SNIPPET_MAX_CHARS) return firstLine;
   return `${firstLine.slice(0, TITLE_SNIPPET_MAX_CHARS - 1)}…`;

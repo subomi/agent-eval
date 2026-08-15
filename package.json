@@ -24,11 +24,18 @@
     ]
   },
   "dependencies": {
-    "@clack/prompts": "^1.7.0",
-    "@earendil-works/pi-ai": "^0.84.2"
+    "@earendil-works/pi-ai": "^0.84.2",
+    "@json-render/core": "0.19.0",
+    "@json-render/react": "0.19.0",
+    "@letta-ai/trajectory": "0.2.5",
+    "ink": "^7.1.1",
+    "react": "^19.2.8",
+    "smol-toml": "^1.8.0",
+    "zod": "4.4.3"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"
   }

@@ -1,16 +1,14 @@
 #!/usr/bin/env node
 /**
  * `agent-evals` bin entry. Kept tiny on purpose: it must patch
- * `process.emitWarning` (to silence the node:sqlite ExperimentalWarning) and
- * load `.env.local`/`.env` BEFORE the rest of the app is evaluated — static
- * imports would hoist module evaluation (and the sqlite import) above any
- * code here, so the real flow is pulled in with dynamic imports.
+ * `process.emitWarning` (to silence the node:sqlite ExperimentalWarning)
+ * BEFORE the rest of the app is evaluated — static imports would hoist
+ * module evaluation (and the sqlite import) above any code here, so the
+ * real flow is pulled in with a dynamic import. Configuration (provider
+ * keys, judge model) comes from ~/.agent-evals/config.toml.
  */
 
 suppressExperimentalWarnings();
-
-const { loadDotEnv } = await import('./env.js');
-loadDotEnv();
 
 const { main } = await import('./main.js');
 try {

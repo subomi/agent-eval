@@ -12,9 +12,10 @@ export type MetricTarget = 'user' | 'agent' | 'collab';
 
 /**
  * Verdict attached to a finding. The renderer groups these into three
- * severities: pass (`satisfied`/`respected`), mixed (`partial`/`unclear`),
- * and fail (`unsatisfied`/`violated`), plus `issue` for generic cited
- * problems from metrics that don't judge per-item verdicts.
+ * severities: pass (`satisfied`/`respected`/`used`), mixed
+ * (`partial`/`unclear`), and fail (`unsatisfied`/`violated`/`missed`), plus
+ * `issue` for generic cited problems from metrics that don't judge per-item
+ * verdicts.
  */
 export type FindingStatus =
   | 'satisfied'
@@ -23,6 +24,8 @@ export type FindingStatus =
   | 'respected'
   | 'unclear'
   | 'violated'
+  | 'used'
+  | 'missed'
   | 'issue';
 
 /** A piece of evidence cited by turn number. */
