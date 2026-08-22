@@ -1,13 +1,14 @@
 /**
  * Hand-rolled subcommand dispatcher for the `agent-evals` binary:
- * `eval` (default), `list`, `batch`, `insights`, each with its own flags.
+ * `eval` (default), `list`, `search`, `batch`, `insights`, each with its
+ * own flags.
  */
 
 export class UsageError extends Error {}
 
-export type CommandName = 'eval' | 'list' | 'batch' | 'insights';
+export type CommandName = 'eval' | 'list' | 'search' | 'batch' | 'insights';
 
-const COMMAND_NAMES: readonly CommandName[] = ['eval', 'list', 'batch', 'insights'];
+const COMMAND_NAMES: readonly CommandName[] = ['eval', 'list', 'search', 'batch', 'insights'];
 
 export interface EvalOptions {
   /** Emit the run record JSON to stdout instead of the pretty report. */
@@ -29,6 +30,15 @@ export interface EvalOptions {
 }
 
 export interface ListOptions {
+  limit: number | undefined;
+  project: string | undefined;
+  agents: string[] | 'all' | undefined;
+}
+
+export interface SearchOptions {
+  /** Case-insensitive terms; every term must match id, project, or title. */
+  query: string[];
+  /** Cap the number of matches shown; undefined = all. */
   limit: number | undefined;
   project: string | undefined;
   agents: string[] | 'all' | undefined;
@@ -70,6 +80,7 @@ export interface InsightsOptions {
 export type ParsedCli =
   | { command: 'eval'; help: boolean; options: EvalOptions }
   | { command: 'list'; help: boolean; options: ListOptions }
+  | { command: 'search'; help: boolean; options: SearchOptions }
   | { command: 'batch'; help: boolean; options: BatchOptions }
   | { command: 'insights'; help: boolean; options: InsightsOptions };
 
@@ -77,7 +88,8 @@ export const USAGE = `agent-evals — evaluate local coding-agent sessions with 
 
 Usage
   agent-evals [eval] [options]    evaluate one session (interactive picker unless --session)
-  agent-evals list [options]      list recent sessions with an evaluated? column
+  agent-evals list [options]      list sessions with an evaluated? column
+  agent-evals search <terms…>     find sessions by title, project, or id
   agent-evals batch [options]     evaluate many sessions idempotently
   agent-evals insights [options]  weekly trends, Agent Leverage composite, hotspots
 
@@ -89,15 +101,22 @@ eval options
   --model, -m <ref>      judge model "provider/model-id" (default: pinned model
                          in config.toml, else auto-picked and pinned)
   --metrics <ids>        run only these metrics (comma-separated ids)
-  --limit, -n <n>        max sessions offered in the picker (default 15)
+  --limit, -n <n>        max sessions offered in the picker (default: all)
   --force                re-evaluate even when results already exist
   --no-cache             bypass the judge response cache
   --json                 emit the run record JSON to stdout instead of the report
 
 list options
-  --limit, -n <n>        max sessions to list (default 15)
+  --limit, -n <n>        max sessions to list (default: all)
   --project <slug>       only sessions from this project
   --agents <ids|all>     agent sources to list (see eval options)
+
+search options
+  <terms…>               case-insensitive terms; every term must match the
+                         session's title, project, id, or agent
+  --limit, -n <n>        cap the number of matches shown (default: all)
+  --project <slug>       only sessions from this project
+  --agents <ids|all>     agent sources to search (see eval options)
 
 batch options
   --dry-run              print the work plan and exit (no judge calls)
@@ -149,6 +168,8 @@ export function parseCommandLine(argv: readonly string[]): ParsedCli {
       return parseEval(rest);
     case 'list':
       return parseList(rest);
+    case 'search':
+      return parseSearch(rest);
     case 'batch':
       return parseBatch(rest);
     case 'insights':
@@ -240,6 +261,47 @@ function parseList(argv: readonly string[]): ParsedCli {
   });
 
   return { command: 'list', help, options };
+}
+
+function parseSearch(argv: readonly string[]): ParsedCli {
+  let help = false;
+  const options: SearchOptions = {
+    query: [],
+    limit: undefined,
+    project: undefined,
+    agents: undefined,
+  };
+
+  walkFlags(
+    argv,
+    'search',
+    (flag, take) => {
+      switch (flag) {
+        case '--help':
+        case '-h':
+          help = true;
+          return true;
+        case '--limit':
+        case '-n':
+          options.limit = positiveInt(flag, take());
+          return true;
+        case '--project':
+          options.project = take();
+          return true;
+        case '--agents':
+          options.agents = agentIds(take());
+          return true;
+        default:
+          return false;
+      }
+    },
+    (term) => options.query.push(term),
+  );
+
+  if (!help && options.query.length === 0) {
+    throw new UsageError('search expects at least one query term, e.g. `agent-evals search auth refactor`');
+  }
+  return { command: 'search', help, options };
 }
 
 function parseBatch(argv: readonly string[]): ParsedCli {
@@ -352,16 +414,22 @@ function parseInsights(argv: readonly string[]): ParsedCli {
 
 /**
  * Iterate argv as `--flag[=value]` tokens. `handle` returns false for flags
- * the command does not know, which raises a usage error.
+ * the command does not know, which raises a usage error. Commands that take
+ * positional arguments pass `onPositional`; without it, positionals error.
  */
 function walkFlags(
   argv: readonly string[],
   command: CommandName,
   handle: (flag: string, take: () => string) => boolean,
+  onPositional?: (arg: string) => void,
 ): void {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (!arg.startsWith('-')) {
+      if (onPositional !== undefined) {
+        onPositional(arg);
+        continue;
+      }
       throw new UsageError(`unexpected argument "${arg}" for "agent-evals ${command}"`);
     }
     const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;

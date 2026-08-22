@@ -81,6 +81,11 @@ Evaluate one session: an interactive picker on a TTY, or `--session` to skip
 it. A session is just a batch of one — results land in the same DB with the
 same idempotency rules.
 
+The picker lists **every** session across the active sources, newest first,
+in a scrolling window (↑/↓ move, pgup/pgdn page, `g`/`G` jump to top/bottom).
+Transcripts load lazily in the background, so the picker appears immediately
+even with hundreds of sessions; turn counts fill in as loads settle.
+
 The `--session` ref is resolved across the active sources; in the unlikely
 case a ref matches sessions in more than one source, the command errors and
 asks you to narrow with `--agents`.
@@ -91,22 +96,39 @@ asks you to narrow with `--agents`.
 | `--agents <ids|all>` | agent sources to use (`cursor`, `claude-code`, `codex`; default: `[agents].enabled`, else all available) |
 | `--model, -m <ref>` | judge model `"provider/model-id"` (default: pinned model in config.toml, else auto-picked and pinned) |
 | `--metrics <ids>` | run only these metrics (comma-separated ids) |
-| `--limit, -n <n>` | max sessions offered in the picker (default 15) |
+| `--limit, -n <n>` | max sessions offered in the picker (default: all) |
 | `--force` | re-evaluate even when results already exist |
 | `--no-cache` | bypass the judge response cache |
 | `--json` | emit the run record JSON to stdout instead of the report |
 
 ### `agent-evals list`
 
-Recent sessions across the active sources, newest first, with an
-"evaluated?" column sourced from the DB (and an agent column when more than
-one source is active).
+All sessions across the active sources, newest first, with an "evaluated?"
+column sourced from the DB (and an agent column when more than one source is
+active).
 
 | Flag | Meaning |
 | --- | --- |
-| `--limit, -n <n>` | max sessions to list (default 15) |
+| `--limit, -n <n>` | max sessions to list (default: all) |
 | `--project <slug>` | only sessions from this project |
 | `--agents <ids|all>` | agent sources to list (see `eval`) |
+
+### `agent-evals search <terms…>`
+
+Find sessions by keyword. Every term must match (case-insensitive) somewhere
+in the session's title, project, id, or agent; matches print as the same
+table `list` uses, newest first.
+
+```bash
+agent-evals search auth refactor
+agent-evals search sqlite --agents claude-code
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--limit, -n <n>` | cap the number of matches shown (default: all) |
+| `--project <slug>` | only sessions from this project |
+| `--agents <ids|all>` | agent sources to search (see `eval`) |
 
 ### `agent-evals batch`
 

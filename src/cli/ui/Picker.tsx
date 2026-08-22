@@ -14,8 +14,10 @@ import { relativeAge, singleLine } from '../format.js';
 
 export interface PickerEntry {
   meta: SessionMeta;
-  /** Undefined when the transcript could not be parsed. */
+  /** Present once the transcript has loaded and parsed. */
   session: Session | undefined;
+  /** Background transcript-load state; "loading" rows show a … turn count. */
+  status: 'loading' | 'ready' | 'unreadable';
 }
 
 export interface PickerProps {
@@ -45,8 +47,13 @@ export function Picker({
       onSubmit(cursor);
       return;
     }
+    const last = entries.length - 1;
     if (key.upArrow || input === 'k') setCursor((c) => Math.max(0, c - 1));
-    if (key.downArrow || input === 'j') setCursor((c) => Math.min(entries.length - 1, c + 1));
+    if (key.downArrow || input === 'j') setCursor((c) => Math.min(last, c + 1));
+    if (key.pageUp) setCursor((c) => Math.max(0, c - maxVisible));
+    if (key.pageDown) setCursor((c) => Math.min(last, c + maxVisible));
+    if (input === 'g') setCursor(0);
+    if (input === 'G') setCursor(last);
   });
 
   const windowStart = Math.max(
@@ -60,13 +67,19 @@ export function Picker({
     <Box flexDirection="column">
       <Text>
         <Text bold>Pick a session to evaluate </Text>
-        <Text dimColor>(↑/↓ move · enter select · esc cancel)</Text>
+        <Text dimColor>
+          {`(${cursor + 1}/${entries.length} · ↑/↓ move · pgup/pgdn page · enter select · esc cancel)`}
+        </Text>
       </Text>
       {windowStart > 0 && <Text dimColor>{`  ↑ ${windowStart} more`}</Text>}
       {visible.map((entry, i) => {
         const index = windowStart + i;
         const selected = index === cursor;
-        const turnsLabel = entry.session ? `${entry.session.turns.length} turns` : 'unreadable';
+        const turnsLabel = entry.session
+          ? `${entry.session.turns.length} turns`
+          : entry.status === 'loading'
+            ? '… turns'
+            : 'unreadable';
         return (
           <Box key={entry.meta.id}>
             <Text {...(selected ? { color: 'cyan' as const } : {})}>

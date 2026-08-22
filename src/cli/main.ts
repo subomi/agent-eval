@@ -1,7 +1,7 @@
 /**
- * `agent-evals` command dispatcher: `eval` (default), `list`, `batch`,
- * `insights`. Commands stay thin — parse args, run the pipeline, hand data
- * to an Ink component.
+ * `agent-evals` command dispatcher: `eval` (default), `list`, `search`,
+ * `batch`, `insights`. Commands stay thin — parse args, run the pipeline,
+ * hand data to an Ink component.
  *
  * Stream discipline: final artifacts (report, --json run record, list/batch
  * tables) go to stdout; all interaction and progress goes to stderr, so
@@ -36,6 +36,10 @@ export async function main(argv: readonly string[]): Promise<number> {
       case 'list': {
         const { runListCommand } = await import('./commands/list.js');
         return await runListCommand(parsed.options);
+      }
+      case 'search': {
+        const { runSearchCommand } = await import('./commands/search.js');
+        return await runSearchCommand(parsed.options);
       }
       case 'batch': {
         const { runBatchCommand } = await import('./commands/batch.js');

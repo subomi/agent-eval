@@ -12,6 +12,7 @@ import type { ReactElement } from 'react';
 
 import { sourceById, type SessionSource } from '../../adapters/index.js';
 import { DIRECTIVE_EXTRACTOR_VERSION, extractDirectives } from '../../extract/directives.js';
+import { PromisePool } from '../../judge/index.js';
 import { allMetrics } from '../../metrics/index.js';
 import type { Session } from '../../model/session.js';
 import { evaluateSessions, type PipelineEvents } from '../../pipeline/evaluate.js';
@@ -23,7 +24,6 @@ import { Picker, type PickerEntry } from '../ui/Picker.js';
 import { Report } from '../ui/Report.js';
 import { printArtifact } from '../ui/artifact.js';
 import {
-  DEFAULT_SESSION_LIMIT,
   errorMessage,
   listSessionsAcrossSources,
   loadConfigWithNotice,
@@ -32,6 +32,9 @@ import {
   selectMetrics,
   setupJudge,
 } from './shared.js';
+
+/** Parallel transcript reads feeding the picker's background loader. */
+const TRANSCRIPT_LOAD_CONCURRENCY = 8;
 
 export async function runEvalCommand(options: EvalOptions): Promise<number> {
   const metrics = selectMetrics(options.metrics);
@@ -49,7 +52,7 @@ export async function runEvalCommand(options: EvalOptions): Promise<number> {
         'interactive picker needs a terminal; pass --session <uuid|path> (find one with `agent-evals list`)',
       );
     }
-    const picked = await pickSessionInteractively(options.limit ?? DEFAULT_SESSION_LIMIT, sources);
+    const picked = await pickSessionInteractively(options.limit, sources);
     if (picked === undefined) return 130; // user cancelled
     session = picked;
   }
@@ -180,52 +183,79 @@ function startEvalProgress(
 // ---------------------------------------------------------------------------
 
 async function pickSessionInteractively(
-  limit: number,
+  limit: number | undefined,
   sources: readonly SessionSource[],
 ): Promise<Session | undefined> {
-  console.error(`Scanning recent sessions (${sources.map((s) => s.id).join(', ')})…`);
-  const metas = await listSessionsAcrossSources(sources, { limit });
+  console.error(`Scanning sessions (${sources.map((s) => s.id).join(', ')})…`);
+  const metas = await listSessionsAcrossSources(sources, limit !== undefined ? { limit } : {});
   if (metas.length === 0) {
     throw new Error(`no sessions found for agents ${sources.map((s) => s.id).join(', ')}`);
   }
 
-  // Load each transcript up front: real turn counts in the picker, and the
-  // chosen session is instantly available.
-  const entries: PickerEntry[] = await Promise.all(
-    metas.map(async (meta) => {
-      try {
-        return { meta, session: await sourceById(meta.agent)!.loadSession(meta) };
-      } catch {
-        return { meta, session: undefined };
-      }
-    }),
-  );
+  // The picker appears immediately; transcripts load lazily behind it (turn
+  // counts fill in as loads settle) so an unlimited listing stays snappy.
+  let entries: readonly PickerEntry[] = metas.map((meta) => ({
+    meta,
+    session: undefined,
+    status: 'loading' as const,
+  }));
+  let alive = true;
+  let rerender: () => void = () => {};
+  const pool = new PromisePool(TRANSCRIPT_LOAD_CONCURRENCY);
+  for (const [i, meta] of metas.entries()) {
+    void pool.run(async () => {
+      if (!alive) return;
+      const next = await loadEntry(meta);
+      entries = entries.map((entry, j) => (j === i ? next : entry));
+      rerender();
+    });
+  }
 
   const index = await new Promise<number | undefined>((resolve) => {
-    const instance = render(
+    const settle = (value: number | undefined): void => {
+      alive = false;
+      instance.unmount();
+      resolve(value);
+    };
+    const view = (): ReactElement => (
       <Picker
         entries={entries}
         showAgent={sources.length > 1}
-        onSubmit={(i) => {
-          instance.unmount();
-          resolve(i);
-        }}
-        onCancel={() => {
-          instance.unmount();
-          resolve(undefined);
-        }}
-      />,
-      { stdout: process.stderr, stdin: process.stdin, patchConsole: false, exitOnCtrlC: false },
+        onSubmit={settle}
+        onCancel={() => settle(undefined)}
+      />
     );
+    const instance = render(view(), {
+      stdout: process.stderr,
+      stdin: process.stdin,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    });
+    rerender = () => {
+      if (alive) instance.rerender(view());
+    };
   });
 
   if (index === undefined) {
     console.error('Cancelled.');
     return undefined;
   }
-  const chosen = entries[index];
-  if (chosen?.session === undefined) {
-    throw new Error(`could not read the transcript for session ${chosen?.meta.id ?? index}`);
+  let chosen = entries[index]!;
+  if (chosen.status === 'loading') {
+    // Still queued behind other loads; load it directly instead of waiting.
+    console.error('Loading transcript…');
+    chosen = await loadEntry(chosen.meta);
+  }
+  if (chosen.session === undefined) {
+    throw new Error(`could not read the transcript for session ${chosen.meta.id}`);
   }
   return chosen.session;
+}
+
+async function loadEntry(meta: PickerEntry['meta']): Promise<PickerEntry> {
+  try {
+    return { meta, session: await sourceById(meta.agent)!.loadSession(meta), status: 'ready' };
+  } catch {
+    return { meta, session: undefined, status: 'unreadable' };
+  }
 }

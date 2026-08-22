@@ -22,9 +22,10 @@ import {
   pinJudgeModel,
   type AgentEvalsConfig,
 } from '../../store/config.js';
+import { openDb } from '../../store/db.js';
 import { UsageError } from '../args.js';
-
-export const DEFAULT_SESSION_LIMIT = 15;
+import { relativeAge } from '../format.js';
+import type { SessionListRow } from '../ui/SessionTable.js';
 
 /** Load config.toml, printing the first-run notice when the template was written. */
 export function loadConfigWithNotice(): AgentEvalsConfig {
@@ -106,6 +107,43 @@ export async function listSessionsAcrossSources(
   const merged = lists.flat();
   merged.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
   return options.limit !== undefined ? merged.slice(0, options.limit) : merged;
+}
+
+/**
+ * Build `SessionTable` rows for a set of metas: load each transcript for the
+ * real turn count and count evaluated metrics from the DB. Unreadable
+ * transcripts keep their row with a "?" turn count.
+ */
+export async function buildSessionRows(
+  metas: readonly SessionMeta[],
+): Promise<SessionListRow[]> {
+  const db = openDb();
+  try {
+    return await Promise.all(
+      metas.map(async (meta): Promise<SessionListRow> => {
+        let turns = '?';
+        let evaluatedMetrics = 0;
+        try {
+          const session = await sourceById(meta.agent)!.loadSession(meta);
+          turns = String(session.turns.length);
+          evaluatedMetrics = db.countEvaluatedMetrics(session.contentHash);
+        } catch {
+          // unreadable transcript; keep the row with unknown turn count
+        }
+        return {
+          id: meta.id,
+          agent: meta.agent,
+          age: relativeAge(meta.updatedAt),
+          turns,
+          evaluatedMetrics,
+          project: meta.project,
+          title: meta.title,
+        };
+      }),
+    );
+  } finally {
+    db.close();
+  }
 }
 
 /**
